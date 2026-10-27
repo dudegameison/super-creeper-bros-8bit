@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Super Creeper Bros 8-Bit</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+    body {
+      margin: 0;
+      background: #000;
+      overflow: hidden;
+      font-family: 'Press Start 2P', system-ui;
+      image-rendering: pixelated;
+    }
+    canvas { display: block; margin: 0 auto; }
+    #ui {
+      position: absolute; top: 10px; left: 10px; color: #fff;
+      background: rgba(0,0,0,0.75); padding: 12px 20px;
+      border: 6px solid #fff; font-size: 18px; pointer-events: none;
+      box-shadow: 0 0 0 4px #000;
+    }
+    #gameOver, #winScreen {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      color: #ffff00; font-size: 42px; text-align: center;
+      background: rgba(0,0,0,0.9); padding: 40px 60px;
+      border: 8px solid #ffff00; display: none;
+      text-shadow: 4px 4px 0 #000; box-shadow: 0 0 0 8px #000;
+    }
+    small { font-size: 18px; display: block; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    SCORE <span id="score">00000</span>  HI <span id="highscore">00000</span><br>
+    LIVES <span id="lives">❤️❤️❤️</span><br>
+    <small>←→ / A D  JUMP: SPACE / W  RUN: SHIFT or Right Click</small>
+  </div>
+
+  <canvas id="game" width="800" height="600"></canvas>
+
+  <div id="gameOver">
+    GAME OVER<br>
+    <small style="font-size:24px">PRESS R TO RESTART</small>
+  </div>
+  <div id="winScreen">
+    STAGE CLEAR!<br>
+    YOU SAVED THE VILLAGE!<br>
+    <small style="font-size:24px">PRESS R TO PLAY AGAIN</small>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const scoreEl = document.getElementById('score');
+    const highscoreEl = document.getElementById('highscore');
+    const livesEl = document.getElementById('lives');
+    const gameOverEl = document.getElementById('gameOver');
+    const winEl = document.getElementById('winScreen');
+
+    let score = 0;
+    let highscore = localStorage.getItem('creeperHighscore') || 0;
+    highscoreEl.textContent = String(highscore).padStart(5, '0');
+    let lives = 3;
+    let gameRunning = true;
+    let lastTime = 0;
+
+    const player = {
+      x: 100, y: 380, vx: 0, vy: 0,
+      width: 40, height: 60,
+      onGround: false,
+      isRunning: false,
+      facing: 1
+    };
+
+    const GRAVITY = 0.85;
+    const JUMP = -19;
+    const RUN_BOOST = -4;
+    const WALK_SPEED = 5.2;
+    const RUN_SPEED = 8.8;
+    const ACCEL = 1.4;
+    const FRICTION = 0.82;
+
+    const keys = {};
+    window.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
+    window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+
+    // Run with SHIFT or Right Click
+    window.addEventListener('mousedown', e => { if (e.button === 2) player.isRunning = true; });
+    window.addEventListener('mouseup', e => { if (e.button === 2) player.isRunning = false; });
+    window.addEventListener('contextmenu', e => e.preventDefault());
+
+    const platforms = [
+      {x: 0, y: 500, w: 3200, h: 120},
+      {x: 320, y: 400, w: 260, h: 30},
+      {x: 720, y: 310, w: 200, h: 30},
+      {x: 1120, y: 440, w: 180, h: 30},
+      {x: 1580, y: 270, w: 240, h: 30},
+      {x: 2050, y: 380, w: 190, h: 30}
+    ];
+
+    let diamonds = [
+      {x: 460, y: 340, collected: false},
+      {x: 840, y: 240, collected: false},
+      {x: 1250, y: 370, collected: false},
+      {x: 1720, y: 200, collected: false},
+      {x: 2280, y: 310, collected: false}
+    ];
+
+    let zombie = { x: 920, y: 430, vx: -2.8, vy: 0, width: 40, height: 50 };
+
+    const portal = { x: 2650, y: 340, w: 60, h: 140 };
+
+    let cameraX = 0;
+
+    // Web Audio
+    let audioCtx;
+    function playSound(type) {
+      try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const now = audioCtx.currentTime;
+        if (type === 'jump') {
+          const osc = audioCtx.createOscillator(); osc.type = 'sine';
+          const gain = audioCtx.createGain();
+          osc.connect(gain); gain.connect(audioCtx.destination);
+          osc.frequency.setValueAtTime(650, now);
+          osc.frequency.exponentialRampToValueAtTime(200, now + 0.35);
+          gain.gain.value = 0.35; gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+          osc.start(now); osc.stop(now + 0.4);
+        } else if (type === 'collect') {
+          const osc = audioCtx.createOscillator(); osc.type = 'triangle';
+          const gain = audioCtx.createGain();
+          osc.connect(gain); gain.connect(audioCtx.destination);
+          osc.frequency.setValueAtTime(900, now);
+          osc.frequency.setValueAtTime(1400, now + 0.1);
+          gain.gain.value = 0.45; gain.gain.exponentialRampToValueAtTime(0.001, now + 0.55);
+          osc.start(now); osc.stop(now + 0.6);
+        } else if (type === 'stomp') {
+          const osc = audioCtx.createOscillator(); osc.type = 'sawtooth';
+          const gain = audioCtx.createGain();
+          osc.connect(gain); gain.connect(audioCtx.destination);
+          osc.frequency.setValueAtTime(180, now);
+          gain.gain.value = 0.65; gain.gain.exponentialRampToValueAtTime(0.001, now + 0.28);
+          osc.start(now); osc.stop(now + 0.3);
+        } else if (type === 'win') {
+          [523,659,784,1046].forEach((f,i) => {
+            const o = audioCtx.createOscillator();
+            const g = audioCtx.createGain();
+            o.type = 'sine'; o.frequency.value = f;
+            o.connect(g); g.connect(audioCtx.destination);
+            o.start(now + i * 0.08);
+            g.gain.value = 0.3; g.gain.exponentialRampToValueAtTime(0.001, now + 1.8);
+            o.stop(now + 1.8);
+          });
+        } else if (type === 'hurt') {
+          const osc = audioCtx.createOscillator(); osc.type = 'sawtooth';
+          const gain = audioCtx.createGain();
+          osc.connect(gain); gain.connect(audioCtx.destination);
+          osc.frequency.setValueAtTime(420, now);
+          osc.frequency.exponentialRampToValueAtTime(90, now + 0.65);
+          gain.gain.value = 0.5; gain.gain.exponentialRampToValueAtTime(0.001, now + 0.65);
+          osc.start(now); osc.stop(now + 0.7);
+        }
+      } catch(e) {}
+    }
+
+    function drawBackground() {
+      ctx.fillStyle = '#5C94FC';
+      ctx.fillRect(0, 0, 800, 600);
+      ctx.fillStyle = '#fff';
+      const cloudOffset = cameraX * 0.2;
+      const cloud = (x, y) => {
+        ctx.fillRect(x - cloudOffset, y, 80, 24);
+        ctx.fillRect(x + 20 - cloudOffset, y - 12, 48, 28);
+      };
+      cloud(120, 80); cloud(480, 55); cloud(920, 110);
+      cloud(1450, 70); cloud(2100, 95);
+    }
+
+    function drawCreeper() {
+      const px = player.x - cameraX;
+      const py = player.y;
+      const bodyColor = player.isRunning ? '#00FF88' : '#00FF00';
+      // body
+      ctx.fillStyle = '#00C000';
+      ctx.fillRect(px + 4, py + 18, 32, 42);
+      ctx.fillStyle = bodyColor;
+      ctx.fillRect(px + 8, py + 22, 24, 34);
+      // head
+      ctx.fillStyle = '#00C000';
+      ctx.fillRect(px + 6, py - 26, 28, 28);
+      ctx.fillStyle = bodyColor;
+      ctx.fillRect(px + 10, py - 22, 20, 20);
+      // eyes & mouth
+      ctx.fillStyle = '#000';
+      const eyeX = player.facing > 0 ? 14 : 20;
+      ctx.fillRect(px + eyeX, py - 18, 6, 8);
+      ctx.fillRect(px + eyeX + 8, py - 18, 6, 8);
+      ctx.fillRect(px + 15, py - 8, 12, 4);
+    }
+
+    function drawZombie() {
+      const zx = zombie.x - cameraX;
+      const zy = zombie.y;
+      ctx.fillStyle = '#008000';
+      ctx.fillRect(zx + 6, zy + 12, 28, 38);
+      ctx.fillStyle = '#00A000';
+      ctx.fillRect(zx + 8, zy - 16, 24, 26);
+      ctx.fillStyle = '#FF0000';
+      ctx.fillRect(zx + 12, zy - 12, 6, 6);
+      ctx.fillRect(zx + 22, zy - 12, 6, 6);
+      ctx.fillStyle = '#000';
+      ctx.fillRect(zx + 13, zy - 2, 14, 4);
+    }
+
+    function drawPlatforms() {
+      for (const p of platforms) {
+        ctx.fillStyle = '#8B5A2B';
+        ctx.fillRect(p.x - cameraX, p.y, p.w, p.h);
+        ctx.fillStyle = '#00C000';
+        ctx.fillRect(p.x - cameraX, p.y, p.w, 12);
+        ctx.fillStyle = '#6B3A1A';
+        for (let i = 0; i < p.w; i += 16) {
+          ctx.fillRect(p.x - cameraX + i, p.y + 18, 8, 8);
+        }
+      }
+    }
+
+    function drawDiamonds() {
+      ctx.fillStyle = '#00FFFF';
+      for (const d of diamonds) {
+        if (!d.collected) {
+          ctx.fillRect(d.x - cameraX - 12, d.y - 12, 24, 24);
+          ctx.fillStyle = '#fff';
+          ctx.fillRect(d.x - cameraX - 6, d.y - 6, 8, 8);
+          ctx.fillStyle = '#00FFFF';
+        }
+      }
+    }
+
+    function draw() {
+      drawBackground();
+      drawPlatforms();
+      drawCreeper();
+      drawZombie();
+      drawDiamonds();
+
+      // portal
+      ctx.fillStyle = '#FF00FF';
+      ctx.fillRect(portal.x - cameraX, portal.y, portal.w, portal.h);
+      ctx.fillStyle = '#00FFFF';
+      ctx.fillRect(portal.x - cameraX + 8, portal.y + 12, portal.w - 16, portal.h - 24);
+    }
+
+    function resolveCollision() {
+      // Horizontal
+      player.x += player.vx;
+      for (const p of platforms) {
+        if (
+          player.x + player.width > p.x &&
+          player.x < p.x + p.w &&
+          player.y + player.height > p.y &&
+          player.y < p.y + p.h
+        ) {
+          if (player.vx > 0) player.x = p.x - player.width;
+          else if (player.vx < 0) player.x = p.x + p.w;
+          player.vx = 0;
+        }
+      }
+
+      // Vertical
+      player.y += player.vy;
+      player.onGround = false;
+      for (const p of platforms) {
+        if (
+          player.x + player.width > p.x &&
+          player.x < p.x + p.w &&
+          player.y + player.height > p.y &&
+          player.y < p.y + p.h
+        ) {
+          if (player.vy > 0) {
+            player.y = p.y - player.height;
+            player.vy = 0;
+            player.onGround = true;
+          } else if (player.vy < 0) {
+            player.y = p.y + p.h;
+            player.vy = 0;
+          }
+        }
+      }
+    }
+
+    function updateZombie(dt) {
+      zombie.vy += GRAVITY * 0.6;
+      zombie.x += zombie.vx;
+      zombie.y += zombie.vy;
+
+      // zombie platform collision (simple)
+      for (const p of platforms) {
+        if (
+          zombie.x + zombie.width > p.x &&
+          zombie.x < p.x + p.w &&
+          zombie.y + zombie.height > p.y &&
+          zombie.y + zombie.height - zombie.vy <= p.y
+        ) {
+          zombie.y = p.y - zombie.height;
+          zombie.vy = 0;
+        }
+      }
+
+      // patrol bounds
+      if (zombie.x < 800 || zombie.x > 1300) zombie.vx *= -1;
+    }
+
+    function update(dt) {
+      if (!gameRunning) return;
+
+      // input
+      const targetSpeed = player.isRunning ? RUN_SPEED : WALK_SPEED;
+      let dir = 0;
+      if (keys['arrowleft'] || keys['a']) dir = -1;
+      if (keys['arrowright'] || keys['d']) dir = 1;
+
+      player.vx = player.vx * (1 - FRICTION) + dir * targetSpeed * ACCEL;
+      if (Math.abs(player.vx) < 0.2) player.vx = 0;
+
+      // jump
+      if ((keys[' '] || keys['w'] || keys['arrowup']) && player.onGround) {
+        player.vy = player.isRunning ? JUMP + RUN_BOOST : JUMP;
+        player.onGround = false;
+        playSound('jump');
+      }
+
+      // shift run
+      if (keys['shift']) player.isRunning = true;
+      else if (!keys['shift'] && !player.isRunning) player.isRunning = false; // right-click already handled
+
+      player.vy += GRAVITY;
+      player.facing = dir !== 0 ? dir : player.facing;
+
+      resolveCollision();
+
+      // fall death
+      if (player.y > 650) {
+        lives--;
+        livesEl.textContent = '❤️'.repeat(Math.max(0, lives));
+        playSound('hurt');
+        if (lives <= 0) {
+          gameRunning = false;
+          gameOverEl.style.display = 'block';
+        } else {
+          player.x = 100; player.y = 380; player.vx = player.vy = 0;
+        }
+      }
+
+      cameraX = Math.max(0, Math.min(player.x - 300, 3200 - 800));
+
+      // zombie
+      updateZombie(dt);
+
+      // diamond collect
+      for (const d of diamonds) {
+        if (!d.collected && Math.hypot(player.x + 20 - d.x, player.y + 30 - d.y) < 32) {
+          d.collected = true;
+          score += 50;
+          scoreEl.textContent = String(score).padStart(5, '0');
+          playSound('collect');
+        }
+      }
+
+      // zombie collision
+      const dx = player.x + 20 - (zombie.x + 20);
+      const dy = player.y + 30 - (zombie.y + 25);
+      if (Math.hypot(dx, dy) < 38) {
+        if (player.vy > 0 && player.y < zombie.y) {
+          // stomp
+          zombie.x = 920; zombie.vy = 0;
+          player.vy = -15;
+          score += 100;
+          scoreEl.textContent = String(score).padStart(5, '0');
+          playSound('stomp');
+        } else {
+          lives--;
+          livesEl.textContent = '❤️'.repeat(Math.max(0, lives));
+          playSound('hurt');
+          if (lives > 0) {
+            player.x = 100; player.y = 380; player.vx = player.vy = 0;
+          } else {
+            gameRunning = false;
+            gameOverEl.style.display = 'block';
+          }
+        }
+      }
+
+      // win
+      if (player.x > portal.x - 40) {
+        gameRunning = false;
+        playSound('win');
+        winEl.style.display = 'block';
+        if (score > highscore) {
+          highscore = score;
+          localStorage.setItem('creeperHighscore', highscore);
+          highscoreEl.textContent = String(highscore).padStart(5, '0');
+        }
+      }
+    }
+
+    function loop(ts) {
+      const dt = Math.min((ts - lastTime) / 16, 2); // cap at 2x speed
+      lastTime = ts;
+
+      update(dt);
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    // Restart handler
+    function restart() {
+      score = 0; lives = 3;
+      scoreEl.textContent = '00000';
+      livesEl.textContent = '❤️❤️❤️';
+      gameRunning = true;
+      player.x = 100; player.y = 380; player.vx = player.vy = 0;
+      diamonds.forEach(d => d.collected = false);
+      zombie.x = 920; zombie.y = 430; zombie.vy = 0;
+      gameOverEl.style.display = 'none';
+      winEl.style.display = 'none';
+    }
+    window.addEventListener('keydown', e => {
+      if ((e.key === 'r' || e.key === 'R') && !gameRunning) restart();
+    });
+
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
